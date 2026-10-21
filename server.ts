@@ -12,10 +12,20 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Initial default base spreadsheet
+// Persistence file paths
+const DATA_DIR = path.resolve(__dirname, '.data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const SPREADSHEET_FILE = path.join(DATA_DIR, 'shared_base_spreadsheet.json');
+const SCANS_FILE = path.join(DATA_DIR, 'shared_scans.json');
+
+// Default initial base spreadsheet
 const DEFAULT_SPREADSHEET = {
   fileName: 'Controle_Pedidos_TBR_PUE2_PFO1_PTU2.xlsx',
   sheetName: 'Pedidos e Pneus',
+  uploadedBy: 'Sistema Padrão',
+  uploadedAt: new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR'),
   columns: [
     'TBR',
     'Station',
@@ -142,11 +152,58 @@ const DEFAULT_SPREADSHEET = {
   pedidoColumn: 'Pedido',
 };
 
-// Shared state in memory for fast multi-operator synchronization
-let currentSpreadsheet = DEFAULT_SPREADSHEET;
-let scanRecords: any[] = [];
+// Load shared spreadsheet from disk if previously uploaded
+function loadPersistedSpreadsheet() {
+  try {
+    if (fs.existsSync(SPREADSHEET_FILE)) {
+      const content = fs.readFileSync(SPREADSHEET_FILE, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (parsed && Array.isArray(parsed.rows) && parsed.rows.length > 0) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao carregar planilha salva:', err);
+  }
+  return DEFAULT_SPREADSHEET;
+}
+
+// Load daily scans from disk
+function loadPersistedScans() {
+  try {
+    if (fs.existsSync(SCANS_FILE)) {
+      const content = fs.readFileSync(SCANS_FILE, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao carregar leituras salvas:', err);
+  }
+  return [];
+}
+
+let currentSpreadsheet = loadPersistedSpreadsheet();
+let scanRecords: any[] = loadPersistedScans();
 let connectedClients: express.Response[] = [];
 let activeOperators: Record<string, { operatorName: string; station: string; lastSeen: number }> = {};
+
+function saveSpreadsheetToDisk(sheet: any) {
+  try {
+    fs.writeFileSync(SPREADSHEET_FILE, JSON.stringify(sheet, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Falha ao salvar planilha no disco:', err);
+  }
+}
+
+function saveScansToDisk(scans: any[]) {
+  try {
+    fs.writeFileSync(SCANS_FILE, JSON.stringify(scans, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Falha ao salvar leituras no disco:', err);
+  }
+}
 
 function notifyAllClients(eventType: string, data: any) {
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -169,9 +226,9 @@ function cleanInactiveOperators() {
   });
 }
 
-// REST API for Multi-Operator Sync
+// API Routes
 
-// Get complete current state
+// 1. Get current synchronized state
 app.get('/api/state', (req, res) => {
   cleanInactiveOperators();
   res.json({
@@ -182,18 +239,46 @@ app.get('/api/state', (req, res) => {
   });
 });
 
-// Update shared base spreadsheet (when any operator uploads a new sheet)
+// 2. Upload / Update shared spreadsheet for all operators
 app.post('/api/spreadsheet', (req, res) => {
-  const newSheet = req.body;
+  const { sheet, uploadedBy } = req.body;
+  const newSheet = sheet || req.body;
+
   if (!newSheet || !Array.isArray(newSheet.rows)) {
-    return res.status(400).json({ error: 'Planilha inválida' });
+    return res.status(400).json({ error: 'Planilha inválida ou sem linhas' });
   }
-  currentSpreadsheet = newSheet;
+
+  const now = new Date();
+  const timestamp = now.toLocaleDateString('pt-BR') + ' às ' + now.toLocaleTimeString('pt-BR');
+
+  currentSpreadsheet = {
+    ...newSheet,
+    uploadedBy: uploadedBy || newSheet.uploadedBy || 'Operador',
+    uploadedAt: timestamp,
+  };
+
+  // Persist to disk so it stays available forever
+  saveSpreadsheetToDisk(currentSpreadsheet);
+
+  // Broadcast instantly to all connected operators!
   notifyAllClients('spreadsheet_updated', currentSpreadsheet);
-  res.json({ success: true, count: currentSpreadsheet.rows.length });
+
+  console.log(`📢 Nova Planilha Base recebida de ${currentSpreadsheet.uploadedBy}: ${currentSpreadsheet.rows.length} itens.`);
+  res.json({ success: true, count: currentSpreadsheet.rows.length, spreadsheet: currentSpreadsheet });
 });
 
-// Record a new scan (Server-Authoritative with Cross-Operator Duplicate Detection!)
+// 3. Reset to default demo spreadsheet
+app.post('/api/spreadsheet/reset', (req, res) => {
+  currentSpreadsheet = {
+    ...DEFAULT_SPREADSHEET,
+    uploadedAt: new Date().toLocaleDateString('pt-BR') + ' às ' + new Date().toLocaleTimeString('pt-BR'),
+  };
+  saveSpreadsheetToDisk(currentSpreadsheet);
+  notifyAllClients('spreadsheet_updated', currentSpreadsheet);
+  res.json({ success: true, spreadsheet: currentSpreadsheet });
+});
+
+// 4. Record new scan with cross-operator duplicate prevention
 app.post('/api/scans', (req, res) => {
   const item = req.body;
   if (!item || !item.scannedTbr) {
@@ -203,7 +288,7 @@ app.post('/api/scans', (req, res) => {
   const normTbr = String(item.scannedTbr).trim().toLowerCase().replace(/[\s\-\._]/g, '');
   const todayISO = item.scanDateISO || new Date().toISOString().slice(0, 10);
 
-  // Check if ANY operator already scanned this TBR on this day
+  // Check if any operator already scanned this TBR today
   const existing = scanRecords.find(i => 
     (i.status === 'found' || i.status === 'station_mismatch') &&
     String(i.scannedTbr).trim().toLowerCase().replace(/[\s\-\._]/g, '') === normTbr &&
@@ -211,7 +296,6 @@ app.post('/api/scans', (req, res) => {
   );
 
   if (existing) {
-    // Duplicate detected across operators!
     const duplicateEvent = {
       ...item,
       id: `dup-${Date.now()}-${Math.random()}`,
@@ -220,22 +304,23 @@ app.post('/api/scans', (req, res) => {
       firstOperatorName: existing.operatorName,
     };
     scanRecords.unshift(duplicateEvent);
+    saveScansToDisk(scanRecords);
     notifyAllClients('scan_added', duplicateEvent);
     return res.json({ status: 'duplicate', duplicateItem: duplicateEvent, existingScan: existing });
   }
 
-  // Valid new scan
   const newRecord = {
     ...item,
     id: `scan-${Date.now()}-${Math.random()}`,
   };
 
   scanRecords.unshift(newRecord);
+  saveScansToDisk(scanRecords);
   notifyAllClients('scan_added', newRecord);
   res.json({ status: 'ok', item: newRecord });
 });
 
-// Operator presence heartbeat
+// 5. Operator heartbeat
 app.post('/api/operators/heartbeat', (req, res) => {
   const { operatorId, operatorName, station } = req.body;
   if (operatorId && operatorName) {
@@ -249,15 +334,16 @@ app.post('/api/operators/heartbeat', (req, res) => {
   res.json({ activeOperators: Object.values(activeOperators) });
 });
 
-// Clear scans for today
+// 6. Clear daily scans
 app.delete('/api/scans/today', (req, res) => {
   const todayISO = req.query.date || new Date().toISOString().slice(0, 10);
   scanRecords = scanRecords.filter(i => i.scanDateISO !== todayISO);
+  saveScansToDisk(scanRecords);
   notifyAllClients('scans_cleared', { date: todayISO });
   res.json({ success: true });
 });
 
-// Server-Sent Events (SSE) for Real-Time live streaming to all devices
+// 7. SSE Live Real-Time Stream
 app.get('/api/scans/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -265,8 +351,6 @@ app.get('/api/scans/stream', (req, res) => {
   res.flushHeaders();
 
   connectedClients.push(res);
-
-  // Send initial connected ping
   res.write(`event: connected\ndata: ${JSON.stringify({ status: 'connected', clientsCount: connectedClients.length })}\n\n`);
 
   req.on('close', () => {

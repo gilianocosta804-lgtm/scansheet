@@ -21,16 +21,23 @@ import { SpreadsheetData, ALLOWED_STATIONS } from '../types';
 
 interface BarcodeScannerProps {
   spreadsheetData: SpreadsheetData;
+  currentStation: string;
+  onStationChange: (station: string) => void;
   onScan: (tbr: string, station: string | null, method: 'camera' | 'usb_scanner' | 'manual' | 'image' | 'test') => void;
   isProcessing: boolean;
+  onOpenUploadModal?: () => void;
 }
 
 export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   spreadsheetData,
+  currentStation,
+  onStationChange,
   onScan,
   isProcessing,
+  onOpenUploadModal,
 }) => {
-  const [selectedStation, setSelectedStation] = useState<string>('PUE2');
+  const selectedStation = currentStation;
+  const setSelectedStation = (st: string) => onStationChange(st);
   const [lockStation, setLockStation] = useState<boolean>(true); // Locked by default for faster workflow!
   const [manualTbr, setManualTbr] = useState('');
   
@@ -206,8 +213,45 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   ];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       
+      {/* Shared Base Spreadsheet Status Banner for all operators */}
+      <div className="max-w-2xl mx-auto bg-slate-900/90 border border-slate-800 rounded-2xl p-3 shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="p-2 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 shrink-0">
+            <Tag className="w-4 h-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-bold text-white truncate">
+                {spreadsheetData.fileName}
+              </span>
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                {spreadsheetData.rows.length} itens na base
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 truncate mt-0.5">
+              {spreadsheetData.uploadedBy ? (
+                <span>Carregada por: <b className="text-cyan-300">{spreadsheetData.uploadedBy}</b> {spreadsheetData.uploadedAt ? `(${spreadsheetData.uploadedAt})` : ''}</span>
+              ) : (
+                <span>Disponível para toda a equipe em tempo real</span>
+              )}
+            </p>
+          </div>
+        </div>
+
+        {onOpenUploadModal && (
+          <button
+            type="button"
+            onClick={onOpenUploadModal}
+            className="shrink-0 text-xs px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-semibold flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+          >
+            <Upload className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Carregar Nova Planilha</span>
+          </button>
+        )}
+      </div>
+
       {/* Station Selector Bar (Exclusivo: PUE2, PFO1, PTU2) */}
       <div className="max-w-2xl mx-auto bg-slate-900 border border-slate-800 rounded-3xl p-4 shadow-xl">
         <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-800">

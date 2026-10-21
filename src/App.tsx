@@ -37,6 +37,7 @@ import { SpreadsheetViewer } from './components/SpreadsheetViewer';
 import { GeneratedSpreadsheetViewer } from './components/GeneratedSpreadsheetViewer';
 import { FastOperatorHud } from './components/FastOperatorHud';
 import { OperatorModal } from './components/OperatorModal';
+import { UploadSpreadsheetModal } from './components/UploadSpreadsheetModal';
 
 export default function App() {
   // Device unique client ID for multi-operator presence
@@ -90,6 +91,8 @@ export default function App() {
   const [autoDownload, setAutoDownload] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'scanner' | 'source' | 'generated'>('scanner');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [liveSyncToast, setLiveSyncToast] = useState<{ message: string; sub?: string; type?: 'sheet' | 'scan' } | null>(null);
 
   // Sync initial state from server
   const fetchServerState = useCallback(async () => {
@@ -99,6 +102,7 @@ export default function App() {
         const data = await res.json();
         if (data.spreadsheet && Array.isArray(data.spreadsheet.rows)) {
           setSpreadsheetData(data.spreadsheet);
+          localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(data.spreadsheet));
         }
         if (Array.isArray(data.scans)) {
           setScanHistory(data.scans);
@@ -137,6 +141,15 @@ export default function App() {
           const updatedSheet = JSON.parse(e.data);
           setSpreadsheetData(updatedSheet);
           localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updatedSheet));
+          
+          // Alert user that base spreadsheet has been updated by an operator
+          setLiveSyncToast({
+            type: 'sheet',
+            message: `Nova Planilha Base Carregada!`,
+            sub: `${updatedSheet.uploadedBy || 'Operador'} disponibilizou "${updatedSheet.fileName}" com ${updatedSheet.rows.length} itens para todos.`,
+          });
+          playSuccessSound(!soundEnabled);
+          setTimeout(() => setLiveSyncToast(null), 6000);
         } catch {}
       });
 
@@ -175,7 +188,7 @@ export default function App() {
       clearInterval(heartbeatTimer);
       clearInterval(pollTimer);
     };
-  }, [fetchServerState, operatorName, currentStation, todayISO]);
+  }, [fetchServerState, operatorName, currentStation, todayISO, soundEnabled]);
 
   const handleSaveOperator = (name: string) => {
     setOperatorName(name);
@@ -194,17 +207,49 @@ export default function App() {
     }).catch(() => {});
   };
 
+  const handleStationChange = (newStation: string) => {
+    setCurrentStation(newStation);
+    if (operatorName) {
+      fetch('/api/operators/heartbeat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          operatorId: clientIdRef.current,
+          operatorName,
+          station: newStation,
+        }),
+      }).catch(() => {});
+    }
+  };
+
   // Update base spreadsheet across all connected operators
-  const handleUpdateSpreadsheet = (newSheet: SpreadsheetData) => {
-    setSpreadsheetData(newSheet);
-    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(newSheet));
+  const handleUpdateSpreadsheet = (newSheet: SpreadsheetData, uploadedBy?: string) => {
+    const author = uploadedBy || operatorName || 'Operador';
+    const sheetWithAuthor: SpreadsheetData = {
+      ...newSheet,
+      uploadedBy: author,
+      uploadedAt: new Date().toLocaleDateString('pt-BR') + ' às ' + new Date().toLocaleTimeString('pt-BR'),
+    };
+
+    setSpreadsheetData(sheetWithAuthor);
+    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(sheetWithAuthor));
+
+    setLiveSyncToast({
+      type: 'sheet',
+      message: 'Planilha Base Compartilhada com Sucesso!',
+      sub: `Você carregou "${sheetWithAuthor.fileName}" (${sheetWithAuthor.rows.length} itens). Toda a equipe já tem acesso instantâneo.`,
+    });
+    setTimeout(() => setLiveSyncToast(null), 5000);
 
     // Broadcast to server for other operators
     fetch('/api/spreadsheet', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSheet),
-    }).catch(() => {});
+      body: JSON.stringify({
+        sheet: sheetWithAuthor,
+        uploadedBy: author,
+      }),
+    }).catch((err) => console.error('Erro ao sincronizar planilha:', err));
   };
 
   // Main Barcode Scan Handler with Cross-Operator Duplicate Detection
@@ -388,8 +433,47 @@ export default function App() {
         currentDateFormatted={todayFormatted}
         activeOperatorsCount={activeOperators.length}
         onOpenOperatorModal={() => setIsOperatorModalOpen(true)}
+        onOpenUploadModal={() => setIsUploadModalOpen(true)}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
+      />
+
+      {/* Floating Real-Time Synchronization Banner */}
+      {liveSyncToast && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-50 w-full max-w-lg px-4 pointer-events-none animate-in fade-in slide-in-from-top-3">
+          <div className="pointer-events-auto bg-slate-900/95 border border-emerald-500/60 shadow-2xl shadow-emerald-500/20 rounded-2xl p-3.5 backdrop-blur-md flex items-center justify-between gap-3 text-white">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500 text-slate-950 flex items-center justify-center font-bold shrink-0">
+                <FileSpreadsheet className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-white flex items-center gap-1.5 truncate">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  {liveSyncToast.message}
+                </p>
+                {liveSyncToast.sub && (
+                  <p className="text-[11px] text-emerald-200/90 truncate mt-0.5">
+                    {liveSyncToast.sub}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => setLiveSyncToast(null)}
+              className="text-xs font-semibold px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 shrink-0 cursor-pointer"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Spreadsheet Modal for Operators */}
+      <UploadSpreadsheetModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        operatorName={operatorName}
+        onUploadSuccess={handleUpdateSpreadsheet}
       />
 
       {/* Operator Setup Modal */}
@@ -450,8 +534,11 @@ export default function App() {
 
             <BarcodeScanner
               spreadsheetData={spreadsheetData}
+              currentStation={currentStation}
+              onStationChange={handleStationChange}
               onScan={handleTbrAndStationScan}
               isProcessing={isProcessing}
+              onOpenUploadModal={() => setIsUploadModalOpen(true)}
             />
 
             {/* Quick 3 Station Counters for Today */}
@@ -507,6 +594,7 @@ export default function App() {
         {activeTab === 'source' && (
           <SpreadsheetViewer
             data={spreadsheetData}
+            operatorName={operatorName}
             onUpdateData={handleUpdateSpreadsheet}
             onSelectTbrToScan={(tbr, station) => {
               setActiveTab('scanner');

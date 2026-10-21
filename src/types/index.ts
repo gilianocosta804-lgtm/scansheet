@@ -14,6 +14,8 @@ export interface SpreadsheetData {
   tbrColumn: string;       // Coluna para Código TBR
   stationColumn: string;   // Coluna para Station
   pedidoColumn: string;    // Coluna para Pedido / Ordem
+  uploadedBy?: string;     // Nome do operador que carregou a planilha
+  uploadedAt?: string;     // Data e hora do upload
 }
 
 export interface MatchedScanItem {

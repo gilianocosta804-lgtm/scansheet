@@ -11,7 +11,10 @@ import {
   Database,
   Layers,
   Tag,
-  CheckCircle2
+  CheckCircle2,
+  Users,
+  Radio,
+  Sparkles
 } from 'lucide-react';
 import { SpreadsheetData, SpreadsheetItem } from '../types';
 import { parseSpreadsheetFile, getInitialSpreadsheetData } from '../utils/spreadsheet';
@@ -19,12 +22,14 @@ import * as XLSX from 'xlsx';
 
 interface SpreadsheetViewerProps {
   data: SpreadsheetData;
-  onUpdateData: (newData: SpreadsheetData) => void;
+  operatorName: string;
+  onUpdateData: (newData: SpreadsheetData, uploadedBy?: string) => void;
   onSelectTbrToScan?: (tbr: string, station?: string) => void;
 }
 
 export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
   data,
+  operatorName,
   onUpdateData,
   onSelectTbrToScan,
 }) => {
@@ -45,9 +50,15 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
 
     try {
       const parsed = await parseSpreadsheetFile(file);
-      onUpdateData(parsed);
-      localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(parsed));
-      setUploadSuccess(`Planilha "${file.name}" carregada com sucesso! (${parsed.rows.length} itens encontrados)`);
+      const uploader = operatorName || 'Operador';
+      const updatedSheet: SpreadsheetData = {
+        ...parsed,
+        uploadedBy: uploader,
+        uploadedAt: new Date().toLocaleDateString('pt-BR') + ' às ' + new Date().toLocaleTimeString('pt-BR'),
+      };
+      
+      onUpdateData(updatedSheet, uploader);
+      setUploadSuccess(`Planilha "${file.name}" carregada com sucesso! Todos os outros operadores já estão com ela disponível.`);
     } catch (err: any) {
       setUploadError(err.message || 'Erro ao carregar e interpretar o arquivo de planilha.');
     } finally {
@@ -56,13 +67,21 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
     }
   };
 
-  const handleResetToDemo = () => {
-    if (window.confirm('Restaurar a planilha base de exemplo padrão?')) {
-      const demo = getInitialSpreadsheetData();
-      onUpdateData(demo);
-      localStorage.removeItem('scansheet_persisted_base_sheet');
+  const handleResetToDemo = async () => {
+    if (window.confirm('Restaurar a planilha padrão compartilhada para todos os operadores?')) {
+      try {
+        const res = await fetch('/api/spreadsheet/reset', { method: 'POST' });
+        if (res.ok) {
+          const json = await res.json();
+          onUpdateData(json.spreadsheet);
+        } else {
+          onUpdateData(getInitialSpreadsheetData());
+        }
+      } catch {
+        onUpdateData(getInitialSpreadsheetData());
+      }
       setUploadError(null);
-      setUploadSuccess('Planilha restaurada para o modelo padrão.');
+      setUploadSuccess('Planilha padrão restaurada e sincronizada com a equipe.');
     }
   };
 
@@ -71,25 +90,22 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
     const worksheet = XLSX.utils.json_to_sheet(exportRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, data.sheetName || 'TBR_Producao');
-    XLSX.writeFile(workbook, data.fileName || 'Planilha_Base_TBR.xlsx');
+    XLSX.writeFile(workbook, data.fileName || 'Planilha_Base_Compartilhada.xlsx');
   };
 
   const handleTbrColumnChange = (columnName: string) => {
     const updated = { ...data, tbrColumn: columnName };
     onUpdateData(updated);
-    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updated));
   };
 
   const handleStationColumnChange = (columnName: string) => {
     const updated = { ...data, stationColumn: columnName };
     onUpdateData(updated);
-    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updated));
   };
 
   const handlePedidoColumnChange = (columnName: string) => {
     const updated = { ...data, pedidoColumn: columnName };
     onUpdateData(updated);
-    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updated));
   };
 
   const handleAddNewRow = (e: React.FormEvent) => {
@@ -110,8 +126,6 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
     };
 
     onUpdateData(updated);
-    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updated));
-
     setShowAddModal(false);
     setNewRowData({});
   };
@@ -128,7 +142,10 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
     <div className="space-y-6">
       
       {/* Top Banner and Upload Section */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+        {/* Glow Accent Top Bar */}
+        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-cyan-500 via-emerald-400 to-teal-500" />
+
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           
           <div className="flex items-center gap-3">
@@ -136,26 +153,30 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
               <Database className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-lg font-bold text-white">
-                  Planilha Base de Validação
+                  Planilha Base Compartilhada em Rede
                 </h2>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  {data.rows.length} itens cadastrados
+                  {data.rows.length} itens ativos
+                </span>
+                <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-medium">
+                  <Users className="w-3 h-3 text-cyan-400" /> Acessível por toda a equipe
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Arquivo ativo: <span className="text-slate-200 font-semibold">{data.fileName}</span> | 
-                TBR: <span className="text-emerald-400 font-mono font-semibold">{data.tbrColumn}</span> | 
-                Station: <span className="text-cyan-400 font-mono font-semibold">{data.stationColumn}</span> | 
-                Pedido: <span className="text-purple-400 font-mono font-semibold">{data.pedidoColumn}</span>
+              
+              <p className="text-xs text-slate-400 mt-1">
+                Arquivo ativo: <span className="text-slate-200 font-semibold">{data.fileName}</span>
+                {data.uploadedBy && (
+                  <span> • Carregada por: <b className="text-cyan-300">{data.uploadedBy}</b> {data.uploadedAt ? `(${data.uploadedAt})` : ''}</span>
+                )}
               </p>
             </div>
           </div>
 
           {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
-            {/* Direct Upload Button for Operator */}
+            {/* Direct Upload Button */}
             <label className="flex-1 sm:flex-initial px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer">
               <input
                 type="file"
@@ -164,7 +185,7 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
                 className="hidden"
               />
               <Upload className="w-4 h-4" />
-              <span>{isUploading ? 'Carregando...' : 'Carregar Minha Planilha (.xlsx/.csv)'}</span>
+              <span>{isUploading ? 'Sincronizando...' : 'Carregar Nova Planilha para Todos (.xlsx/.csv)'}</span>
             </label>
 
             <button
@@ -178,7 +199,7 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
             <button
               onClick={handleDownloadCurrentSheet}
               className="p-2.5 rounded-xl text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all cursor-pointer"
-              title="Baixar planilha base atual como Excel (.xlsx)"
+              title="Baixar planilha base atual compartilhada como Excel (.xlsx)"
             >
               <Download className="w-4 h-4" />
             </button>
@@ -194,14 +215,14 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
         </div>
 
         {uploadSuccess && (
-          <div className="mt-4 p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-xs text-emerald-300 flex items-center gap-2">
+          <div className="mt-4 p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/40 text-xs text-emerald-300 flex items-center gap-2 animate-in fade-in">
             <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
             <span>{uploadSuccess}</span>
           </div>
         )}
 
         {uploadError && (
-          <div className="mt-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2">
+          <div className="mt-4 p-3 rounded-xl bg-rose-950/40 border border-rose-500/30 text-xs text-rose-300 flex items-center gap-2 animate-in fade-in">
             <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
             <span>{uploadError}</span>
           </div>
@@ -277,6 +298,11 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
 
       {/* Spreadsheet Table View */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-xl">
+        <div className="p-3.5 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between text-xs text-slate-400">
+          <span>Esta base alimenta as validações de todos os operadores em tempo real</span>
+          <span className="font-mono text-emerald-400 font-semibold">{filteredRows.length} linhas filtradas</span>
+        </div>
+
         <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-950 sticky top-0 z-10 border-b border-slate-800">
@@ -392,7 +418,7 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md shadow-2xl">
             <h3 className="text-base font-bold text-white mb-1">Adicionar Item à Planilha Base</h3>
             <p className="text-xs text-slate-400 mb-4">
-              Preencha os dados do novo item.
+              O novo item será compartilhado com todos os operadores instantaneamente.
             </p>
 
             <form onSubmit={handleAddNewRow} className="space-y-3 max-h-96 overflow-y-auto pr-1">
@@ -426,7 +452,7 @@ export const SpreadsheetViewer: React.FC<SpreadsheetViewerProps> = ({
                   type="submit"
                   className="flex-1 py-2 rounded-xl text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold"
                 >
-                  Salvar na Planilha
+                  Salvar e Compartilhar
                 </button>
               </div>
             </form>

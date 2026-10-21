@@ -21,6 +21,7 @@ interface HeaderProps {
   currentDateFormatted: string;
   activeOperatorsCount: number;
   onOpenOperatorModal: () => void;
+  onOpenUploadModal: () => void;
   activeTab: 'scanner' | 'source' | 'generated';
   onSelectTab: (tab: 'scanner' | 'source' | 'generated') => void;
 }
@@ -36,6 +37,7 @@ export const Header: React.FC<HeaderProps> = ({
   currentDateFormatted,
   activeOperatorsCount,
   onOpenOperatorModal,
+  onOpenUploadModal,
   activeTab,
   onSelectTab,
 }) => {
@@ -89,6 +91,16 @@ export const Header: React.FC<HeaderProps> = ({
                   {operatorName || 'Identificar-se'}
                 </span>
               </div>
+            </button>
+
+            {/* Quick Upload Button for any Operator */}
+            <button
+              onClick={onOpenUploadModal}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 transition-all cursor-pointer shadow-sm"
+              title="Carregar nova planilha base (.xlsx/.csv) compartilhada para toda a equipe"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Carregar Planilha</span>
             </button>
 
             {/* Auto-Download Toggle */}
