@@ -20,7 +20,7 @@ export interface MatchedScanItem {
   id: string;
   searchDate: string;      // Data e hora em que foi pesquisado (DD/MM/AAAA HH:MM:SS)
   scanDateISO: string;     // Data no formato YYYY-MM-DD para agrupamento diário
-  operatorName: string;    // Nome do operador responsável
+  operatorName: string;    // Nome do operador responsável por esta leitura
   scannedTbr: string;      // Código TBR lido
   scannedStation: string;  // Station lida ou selecionada
   resolvedStation: string; // Station final validada
@@ -29,6 +29,13 @@ export interface MatchedScanItem {
   matchedRow: SpreadsheetItem;
   status: 'found' | 'duplicate' | 'not_found' | 'station_mismatch' | 'station_disallowed';
   firstScannedAt?: string; // Horário da primeira leitura caso seja duplicata
+  firstOperatorName?: string; // Nome do colega que leu primeiro caso seja duplicata
+}
+
+export interface ActiveOperator {
+  operatorName: string;
+  station: string;
+  lastSeen: number;
 }
 
 export interface StationSpreadsheetCollection {

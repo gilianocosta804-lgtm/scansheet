@@ -118,7 +118,7 @@ export const FastOperatorHud: React.FC<FastOperatorHudProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-amber-200 mt-0.5">
-                  1ª leitura registrada às <b>{lastItem.firstScannedAt || 'nesta sessão'}</b>. Considerado apenas o primeiro registro.
+                  1ª leitura realizada {lastItem.firstOperatorName ? `por ${lastItem.firstOperatorName} ` : ''}às <b>{lastItem.firstScannedAt || 'nesta sessão'}</b>. Considerado apenas o primeiro registro.
                 </p>
               </div>
             )}

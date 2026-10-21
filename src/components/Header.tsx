@@ -7,9 +7,7 @@ import {
   DownloadCloud,
   Calendar,
   UserCheck,
-  Shield,
-  ShieldCheck,
-  Lock
+  Users
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -21,9 +19,8 @@ interface HeaderProps {
   sourceFileName: string;
   operatorName: string;
   currentDateFormatted: string;
-  isAdmin: boolean;
+  activeOperatorsCount: number;
   onOpenOperatorModal: () => void;
-  onOpenAdminLogin: () => void;
   activeTab: 'scanner' | 'source' | 'generated';
   onSelectTab: (tab: 'scanner' | 'source' | 'generated') => void;
 }
@@ -37,9 +34,8 @@ export const Header: React.FC<HeaderProps> = ({
   sourceFileName,
   operatorName,
   currentDateFormatted,
-  isAdmin,
+  activeOperatorsCount,
   onOpenOperatorModal,
-  onOpenAdminLogin,
   activeTab,
   onSelectTab,
 }) => {
@@ -56,54 +52,44 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                  ScanSheet <span className="text-emerald-400 font-mono text-xs font-semibold">TBR</span>
+                  ScanSheet <span className="text-emerald-400 font-mono text-xs font-semibold">TBR Multi-Operador</span>
                 </h1>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
-                  <Calendar className="w-3 h-3 text-emerald-400" /> Dia: {currentDateFormatted}
+                  <Calendar className="w-3 h-3 text-emerald-400" /> {currentDateFormatted}
+                </span>
+
+                {/* Multi-operator live presence badge */}
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  <Users className="w-3 h-3 text-cyan-400" />
+                  <span>{activeOperatorsCount > 1 ? `${activeOperatorsCount} operadores online` : 'Modo em Rede Ativo'}</span>
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 truncate max-w-xs md:max-w-md">
+              <p className="text-[11px] text-slate-400 truncate max-w-xs md:max-w-md mt-0.5">
                 Estações: <span className="text-emerald-400 font-mono font-bold">PUE2 • PFO1 • PTU2</span> • Base: <span className="text-slate-300 font-medium">{sourceFileName}</span>
               </p>
             </div>
           </div>
 
-          {/* Controls: Operator, Admin, Sound */}
+          {/* Controls: Operator, Auto-download, Sound */}
           <div className="flex items-center flex-wrap gap-2">
             
             {/* Operator Identifier Badge */}
             <button
               onClick={onOpenOperatorModal}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800/90 hover:bg-slate-800 text-slate-200 border border-slate-700 transition-all cursor-pointer shadow-sm group"
-              title="Clique para trocar o operador"
+              title="Clique para alterar seu nome de operador"
             >
               <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
               <div className="text-left text-[11px]">
-                <span className="text-slate-400 block text-[9px] uppercase font-bold leading-none">Operador:</span>
+                <span className="text-slate-400 block text-[9px] uppercase font-bold leading-none">Seu Operador:</span>
                 <span className="font-semibold text-white group-hover:text-emerald-300 transition-colors">
-                  {operatorName || 'Identificar'}
+                  {operatorName || 'Identificar-se'}
                 </span>
               </div>
             </button>
-
-            {/* Admin Badge / Login button */}
-            {isAdmin ? (
-              <span className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm">
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
-                <span>Admin Conectado</span>
-              </span>
-            ) : (
-              <button
-                onClick={onOpenAdminLogin}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium bg-slate-800 text-slate-300 hover:text-amber-300 hover:bg-slate-750 border border-slate-700 transition-all cursor-pointer"
-                title="Acesso do Administrador para gerenciar a Planilha Base"
-              >
-                <Lock className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden sm:inline">Admin</span>
-              </button>
-            )}
 
             {/* Auto-Download Toggle */}
             <button
@@ -135,7 +121,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Simplified Operator Navigation Tabs (History removed) */}
+        {/* Operator Navigation Tabs */}
         <div className="flex border-t border-slate-800/80 -mb-px overflow-x-auto no-scrollbar gap-2 pt-1 pb-1">
           <button
             onClick={() => onSelectTab('scanner')}
@@ -170,12 +156,12 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={() => onSelectTab('source')}
             className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
               activeTab === 'source'
-                ? 'bg-slate-800 text-amber-400 border-b-2 border-amber-400 font-bold'
+                ? 'bg-slate-800 text-cyan-400 border-b-2 border-cyan-400 font-bold'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
             }`}
           >
             <FileSpreadsheet className="w-4 h-4" />
-            Planilha Base {isAdmin && <span className="text-[10px] text-amber-300 font-bold">(Admin)</span>}
+            Carregar / Ver Planilha Base
           </button>
         </div>
       </div>

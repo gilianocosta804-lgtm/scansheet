@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Barcode, 
   FileSpreadsheet, 
@@ -11,11 +11,12 @@ import {
   Zap,
   Calendar,
   UserCheck,
-  ShieldCheck,
-  Lock
+  Users,
+  Radio,
+  Layers
 } from 'lucide-react';
 
-import { SpreadsheetData, MatchedScanItem, ALLOWED_STATIONS } from './types';
+import { SpreadsheetData, MatchedScanItem, ALLOWED_STATIONS, ActiveOperator } from './types';
 import { 
   getInitialSpreadsheetData, 
   findRowByTbrAndStation, 
@@ -25,7 +26,7 @@ import {
 } from './utils/spreadsheet';
 import { 
   playSuccessSound, 
-  playDuplicateSound,
+  playDuplicateSound, 
   playNotFoundSound, 
   playStationRejectSound 
 } from './utils/audio';
@@ -36,27 +37,40 @@ import { SpreadsheetViewer } from './components/SpreadsheetViewer';
 import { GeneratedSpreadsheetViewer } from './components/GeneratedSpreadsheetViewer';
 import { FastOperatorHud } from './components/FastOperatorHud';
 import { OperatorModal } from './components/OperatorModal';
-import { AdminLoginModal } from './components/AdminLoginModal';
 
 export default function App() {
-  // Planilha Base: Carrega a planilha persistida fornecida pelo Administrador, ou o modelo inicial.
-  // Garante que "quando o operador acessar a planilha base já esteja lá".
+  // Device unique client ID for multi-operator presence
+  const clientIdRef = useRef<string>(
+    typeof window !== 'undefined'
+      ? sessionStorage.getItem('scansheet_client_id') || `client_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+      : 'client_initial'
+  );
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('scansheet_client_id', clientIdRef.current);
+    }
+  }, []);
+
+  // Shared Base Spreadsheet (Loaded from Server or Local)
   const [spreadsheetData, setSpreadsheetData] = useState<SpreadsheetData>(() => {
     const saved = localStorage.getItem('scansheet_persisted_base_sheet');
     if (saved) {
       try {
         return JSON.parse(saved);
       } catch (e) {
-        console.warn('Falha ao ler planilha base persistida:', e);
+        console.warn('Falha ao ler planilha base salva:', e);
       }
     }
     return getInitialSpreadsheetData();
   });
 
+  // Synced scan history across all operators
   const [scanHistory, setScanHistory] = useState<MatchedScanItem[]>([]);
   const [lastScannedItem, setLastScannedItem] = useState<MatchedScanItem | null>(null);
+  const [activeOperators, setActiveOperators] = useState<ActiveOperator[]>([]);
 
-  // Operator Identification (Sem turnos, apenas nome do operador)
+  // Operator Identification
   const [operatorName, setOperatorName] = useState<string>(() => {
     return localStorage.getItem('scansheet_operator_name') || '';
   });
@@ -64,11 +78,10 @@ export default function App() {
     return !localStorage.getItem('scansheet_operator_name');
   });
 
-  // Admin Authentication (Login: AdminSva9, Senha: BSBsva961)
-  const [isAdmin, setIsAdmin] = useState<boolean>(false);
-  const [isAdminModalOpen, setIsAdminModalOpen] = useState<boolean>(false);
+  // Active Station selected on this device
+  const [currentStation, setCurrentStation] = useState<string>('PUE2');
 
-  // Current Date in ISO and formatted
+  // Dates
   const todayNow = new Date();
   const todayISO = todayNow.toISOString().slice(0, 10); // "2026-10-20"
   const todayFormatted = todayNow.toLocaleDateString('pt-BR'); // "20/10/2026"
@@ -78,24 +91,137 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'source' | 'generated'>('scanner');
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Sync initial state from server
+  const fetchServerState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/state');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.spreadsheet && Array.isArray(data.spreadsheet.rows)) {
+          setSpreadsheetData(data.spreadsheet);
+        }
+        if (Array.isArray(data.scans)) {
+          setScanHistory(data.scans);
+        }
+        if (Array.isArray(data.activeOperators)) {
+          setActiveOperators(data.activeOperators);
+        }
+      }
+    } catch (e) {
+      // Running standalone/offline fallback
+    }
+  }, []);
+
+  // Connect to SSE stream and periodic heartbeat
+  useEffect(() => {
+    fetchServerState();
+
+    // SSE connection for instant updates
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource('/api/scans/stream');
+      
+      eventSource.addEventListener('scan_added', (e: MessageEvent) => {
+        try {
+          const newRecord = JSON.parse(e.data);
+          setScanHistory(prev => {
+            // Avoid local duplicate if already added
+            if (prev.some(item => item.id === newRecord.id)) return prev;
+            return [newRecord, ...prev];
+          });
+        } catch {}
+      });
+
+      eventSource.addEventListener('spreadsheet_updated', (e: MessageEvent) => {
+        try {
+          const updatedSheet = JSON.parse(e.data);
+          setSpreadsheetData(updatedSheet);
+          localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(updatedSheet));
+        } catch {}
+      });
+
+      eventSource.addEventListener('scans_cleared', () => {
+        setScanHistory(prev => prev.filter(i => i.scanDateISO !== todayISO));
+      });
+    } catch {}
+
+    // Heartbeat every 8s
+    const heartbeatTimer = setInterval(() => {
+      if (operatorName) {
+        fetch('/api/operators/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            operatorId: clientIdRef.current,
+            operatorName,
+            station: currentStation,
+          }),
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (Array.isArray(data.activeOperators)) {
+              setActiveOperators(data.activeOperators);
+            }
+          })
+          .catch(() => {});
+      }
+    }, 8000);
+
+    // Fast polling fallback every 4s to guarantee sync on mobile/sleeper tabs
+    const pollTimer = setInterval(fetchServerState, 4000);
+
+    return () => {
+      if (eventSource) eventSource.close();
+      clearInterval(heartbeatTimer);
+      clearInterval(pollTimer);
+    };
+  }, [fetchServerState, operatorName, currentStation, todayISO]);
+
   const handleSaveOperator = (name: string) => {
     setOperatorName(name);
     localStorage.setItem('scansheet_operator_name', name);
     setIsOperatorModalOpen(false);
+
+    // Immediate heartbeat to announce new operator name
+    fetch('/api/operators/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        operatorId: clientIdRef.current,
+        operatorName: name,
+        station: currentStation,
+      }),
+    }).catch(() => {});
   };
 
-  // Main Barcode Scan Handler
-  const handleTbrAndStationScan = useCallback((
+  // Update base spreadsheet across all connected operators
+  const handleUpdateSpreadsheet = (newSheet: SpreadsheetData) => {
+    setSpreadsheetData(newSheet);
+    localStorage.setItem('scansheet_persisted_base_sheet', JSON.stringify(newSheet));
+
+    // Broadcast to server for other operators
+    fetch('/api/spreadsheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSheet),
+    }).catch(() => {});
+  };
+
+  // Main Barcode Scan Handler with Cross-Operator Duplicate Detection
+  const handleTbrAndStationScan = useCallback(async (
     scannedTbr: string, 
     scannedStation: string | null,
     method: 'camera' | 'usb_scanner' | 'manual' | 'image' | 'test'
   ) => {
     if (!scannedTbr || !scannedTbr.trim()) return;
 
-    // Prompt operator if not identified
     if (!operatorName) {
       setIsOperatorModalOpen(true);
       return;
+    }
+
+    if (scannedStation) {
+      setCurrentStation(scannedStation);
     }
 
     setIsProcessing(true);
@@ -103,18 +229,16 @@ export default function App() {
     const now = new Date();
     const searchDate = now.toLocaleDateString('pt-BR') + ' ' + now.toLocaleTimeString('pt-BR');
     const scanDateISO = now.toISOString().slice(0, 10);
-
     const normTbr = normalizeCode(scannedTbr);
 
-    // 1. Check for Duplicate (same TBR read on this day)
-    // "se o mesmo item for lido 2 vezes avise, e considere apenas o primeiro"
-    const existingScan = scanHistory.find(
+    // 1. Fast local check for duplicate
+    const existingLocal = scanHistory.find(
       i => (i.status === 'found' || i.status === 'station_mismatch') &&
            normalizeCode(i.scannedTbr) === normTbr &&
            i.scanDateISO === scanDateISO
     );
 
-    if (existingScan) {
+    if (existingLocal) {
       playDuplicateSound(!soundEnabled);
 
       const duplicateItem: MatchedScanItem = {
@@ -124,12 +248,13 @@ export default function App() {
         operatorName,
         scannedTbr: scannedTbr.trim(),
         scannedStation: scannedStation || '',
-        resolvedStation: existingScan.resolvedStation,
-        pedido: existingScan.pedido,
+        resolvedStation: existingLocal.resolvedStation,
+        pedido: existingLocal.pedido,
         scanMethod: method,
-        matchedRow: existingScan.matchedRow,
+        matchedRow: existingLocal.matchedRow,
         status: 'duplicate',
-        firstScannedAt: existingScan.searchDate,
+        firstScannedAt: existingLocal.searchDate,
+        firstOperatorName: existingLocal.operatorName,
       };
 
       setScanHistory(prev => [duplicateItem, ...prev]);
@@ -149,12 +274,10 @@ export default function App() {
     );
 
     if (status === 'found' || status === 'station_mismatch') {
-      playSuccessSound(!soundEnabled);
-
       const finalStation = resolvedStation || 'PUE2';
 
       const newItem: MatchedScanItem = {
-        id: `match-${Date.now()}-${Math.random()}`,
+        id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         searchDate,
         scanDateISO,
         operatorName,
@@ -167,7 +290,31 @@ export default function App() {
         status,
       };
 
-      setScanHistory(prev => [newItem, ...prev]);
+      // Server-side sync and atomic duplicate check across all devices
+      try {
+        const response = await fetch('/api/scans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newItem),
+        });
+
+        if (response.ok) {
+          const resJson = await response.json();
+          if (resJson.status === 'duplicate') {
+            // Another operator beat this device by a fraction of a second!
+            playDuplicateSound(!soundEnabled);
+            setLastScannedItem(resJson.duplicateItem);
+            setIsProcessing(false);
+            return;
+          }
+        }
+      } catch {
+        // Offline fallback
+      }
+
+      // Play success beep
+      playSuccessSound(!soundEnabled);
+      setScanHistory(prev => [newItem, ...prev.filter(i => i.id !== newItem.id)]);
       setLastScannedItem(newItem);
 
       if (autoDownload) {
@@ -229,7 +376,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* Header bar */}
+      {/* Header bar with multi-operator live presence */}
       <Header
         soundEnabled={soundEnabled}
         onToggleSound={() => setSoundEnabled(prev => !prev)}
@@ -239,30 +386,19 @@ export default function App() {
         sourceFileName={spreadsheetData.fileName}
         operatorName={operatorName}
         currentDateFormatted={todayFormatted}
-        isAdmin={isAdmin}
+        activeOperatorsCount={activeOperators.length}
         onOpenOperatorModal={() => setIsOperatorModalOpen(true)}
-        onOpenAdminLogin={() => setIsAdminModalOpen(true)}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
       />
 
-      {/* Operator Setup Modal (Sem turnos) */}
+      {/* Operator Setup Modal */}
       <OperatorModal
         isOpen={isOperatorModalOpen}
         currentName={operatorName}
         onSave={handleSaveOperator}
         onClose={() => setIsOperatorModalOpen(false)}
         canDismiss={!!operatorName}
-      />
-
-      {/* Admin Login Modal (Login: AdminSva9, Senha: BSBsva961) */}
-      <AdminLoginModal
-        isOpen={isAdminModalOpen}
-        onClose={() => setIsAdminModalOpen(false)}
-        onSuccess={() => {
-          setIsAdmin(true);
-          setActiveTab('source');
-        }}
       />
 
       {/* Fast Non-blocking Operator HUD alert */}
@@ -276,17 +412,39 @@ export default function App() {
         
         {/* Tab 1: Fast Scanner */}
         {activeTab === 'scanner' && (
-          <div className="space-y-5">
+          <div className="space-y-4">
+            
+            {/* Live Multi-Operator Team Strip */}
+            {activeOperators.length > 0 && (
+              <div className="max-w-2xl mx-auto p-2.5 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-semibold text-slate-300">
+                    Equipe Operacional Conectada ({activeOperators.length}):
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {activeOperators.map((op, idx) => (
+                    <span 
+                      key={idx}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-950 text-[11px] font-medium text-slate-300 border border-slate-800"
+                    >
+                      <span className="font-mono text-emerald-400 font-bold">{op.station}</span>: {op.operatorName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="text-center max-w-2xl mx-auto">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 mb-2">
-                <Zap className="w-3.5 h-3.5 text-emerald-400" /> Leitor Industrial • Proteção Contra Duplicatas
+                <Zap className="w-3.5 h-3.5 text-emerald-400" /> Modo Multi-Operador em Tempo Real Ativo
               </span>
               <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-                Leitura de TBR por Station ({todayFormatted})
+                Leitura Simultânea de TBR por Station ({todayFormatted})
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Colaborador: <b className="text-emerald-400">{operatorName || 'Identifique-se no topo'}</b>.
-                Itens lidos 2 vezes são avisados e apenas a primeira leitura é considerada.
+                Colaboradores podem ler simultaneamente em computadores e celulares diferentes. Todos os pedidos são sincronizados em tempo real nas planilhas do dia sem duplicatas.
               </p>
             </div>
 
@@ -304,7 +462,7 @@ export default function App() {
               >
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Planilha PUE2</span>
                 <span className="text-xl font-mono font-extrabold text-emerald-400 mt-0.5 block">{countPUE2}</span>
-                <span className="text-[10px] text-slate-500">pedidos únicos</span>
+                <span className="text-[10px] text-slate-500">pedidos da equipe</span>
               </div>
 
               <div 
@@ -313,7 +471,7 @@ export default function App() {
               >
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Planilha PFO1</span>
                 <span className="text-xl font-mono font-extrabold text-cyan-400 mt-0.5 block">{countPFO1}</span>
-                <span className="text-[10px] text-slate-500">pedidos únicos</span>
+                <span className="text-[10px] text-slate-500">pedidos da equipe</span>
               </div>
 
               <div 
@@ -322,7 +480,7 @@ export default function App() {
               >
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Planilha PTU2</span>
                 <span className="text-xl font-mono font-extrabold text-purple-400 mt-0.5 block">{countPTU2}</span>
-                <span className="text-[10px] text-slate-500">pedidos únicos</span>
+                <span className="text-[10px] text-slate-500">pedidos da equipe</span>
               </div>
             </div>
           </div>
@@ -333,8 +491,11 @@ export default function App() {
           <GeneratedSpreadsheetViewer
             items={scanHistory}
             selectedDateISO={todayISO}
-            onClear={() => {
-              if (window.confirm(`Limpar as planilhas geradas para o dia ${todayFormatted}?`)) {
+            onClear={async () => {
+              if (window.confirm(`Limpar as planilhas geradas para o dia ${todayFormatted} para toda a equipe?`)) {
+                try {
+                  await fetch(`/api/scans/today?date=${todayISO}`, { method: 'DELETE' });
+                } catch {}
                 setScanHistory(prev => prev.filter(i => i.scanDateISO !== todayISO));
               }
             }}
@@ -342,14 +503,11 @@ export default function App() {
           />
         )}
 
-        {/* Tab 3: Planilha Base (Gerenciada pelo Administrador, acessível para o operador) */}
+        {/* Tab 3: Planilha Base (Sincronizada em tempo real) */}
         {activeTab === 'source' && (
           <SpreadsheetViewer
             data={spreadsheetData}
-            isAdmin={isAdmin}
-            onOpenAdminLogin={() => setIsAdminModalOpen(true)}
-            onAdminLogout={() => setIsAdmin(false)}
-            onUpdateData={setSpreadsheetData}
+            onUpdateData={handleUpdateSpreadsheet}
             onSelectTbrToScan={(tbr, station) => {
               setActiveTab('scanner');
               handleTbrAndStationScan(tbr, station || null, 'manual');
@@ -360,9 +518,9 @@ export default function App() {
 
       <footer className="border-t border-slate-900 bg-slate-950 py-3.5 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>ScanSheet • Controle Diário de TBR por Station (PUE2, PFO1, PTU2)</span>
+          <span>ScanSheet • Sistema Multi-Operador em Tempo Real (PUE2, PFO1, PTU2)</span>
           <span className="text-[11px] text-slate-600">
-            Planilha Base fornecida pelo Administrador • Operador: {operatorName || 'Pendente'}
+            Você está conectado como: <b className="text-slate-300">{operatorName || 'Operador'}</b> • Sincronização Ativa
           </span>
         </div>
       </footer>
