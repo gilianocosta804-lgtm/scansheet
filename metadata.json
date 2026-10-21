@@ -1,0 +1,8 @@
+{
+  "name": "Leitor de Código de Barras & Gestão de Planilhas",
+  "description": "Faça a leitura de códigos de barras, verifique se consta na planilha e crie automaticamente novas planilhas com alertas de notificação em tempo real.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
